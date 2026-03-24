@@ -8,48 +8,102 @@
 #include <algorithm>
 #include <cstring>
 #include <cmath>
+#include <filesystem>
 
 using namespace std;
+namespace fs = filesystem;
 
 // Constants
 const string ROOT_USERNAME = "root";
 const string ROOT_PASSWORD = "sjtu";
 const int ROOT_PRIVILEGE = 7;
 
+// File names
+const string USER_FILE = "users.dat";
+const string BOOK_FILE = "books.dat";
+const string FINANCE_FILE = "finance.dat";
+const string SELECTED_BOOK_FILE = "selected.dat";
+const string LOGIN_STACK_FILE = "login_stack.dat";
+
 // Data structures
 struct User {
-    string userID;
-    string password;
-    string username;
+    char userID[31];        // 30 chars + null terminator
+    char password[31];      // 30 chars + null terminator
+    char username[31];      // 30 chars + null terminator
     int privilege;
 
-    User() : privilege(0) {}
-    User(string id, string pass, string name, int priv)
-        : userID(id), password(pass), username(name), privilege(priv) {}
+    User() {
+        memset(userID, 0, sizeof(userID));
+        memset(password, 0, sizeof(password));
+        memset(username, 0, sizeof(username));
+        privilege = 0;
+    }
+
+    User(const string& id, const string& pass, const string& name, int priv) {
+        strncpy(userID, id.c_str(), 30);
+        userID[30] = '\0';
+        strncpy(password, pass.c_str(), 30);
+        password[30] = '\0';
+        strncpy(username, name.c_str(), 30);
+        username[30] = '\0';
+        privilege = priv;
+    }
+
+    string getUserID() const { return string(userID); }
+    string getPassword() const { return string(password); }
+    string getUsername() const { return string(username); }
 };
 
 struct Book {
-    string ISBN;
-    string bookName;
-    string author;
-    string keyword;
+    char ISBN[21];          // 20 chars + null terminator
+    char bookName[61];      // 60 chars + null terminator
+    char author[61];        // 60 chars + null terminator
+    char keyword[61];       // 60 chars + null terminator
     double price;
     int quantity;
 
-    Book() : price(0.0), quantity(0) {}
-    Book(string isbn) : ISBN(isbn), price(0.0), quantity(0) {}
+    Book() {
+        memset(ISBN, 0, sizeof(ISBN));
+        memset(bookName, 0, sizeof(bookName));
+        memset(author, 0, sizeof(author));
+        memset(keyword, 0, sizeof(keyword));
+        price = 0.0;
+        quantity = 0;
+    }
+
+    Book(const string& isbn) {
+        memset(ISBN, 0, sizeof(ISBN));
+        memset(bookName, 0, sizeof(bookName));
+        memset(author, 0, sizeof(author));
+        memset(keyword, 0, sizeof(keyword));
+        strncpy(ISBN, isbn.c_str(), 20);
+        ISBN[20] = '\0';
+        price = 0.0;
+        quantity = 0;
+    }
+
+    string getISBN() const { return string(ISBN); }
+    string getBookName() const { return string(bookName); }
+    string getAuthor() const { return string(author); }
+    string getKeyword() const { return string(keyword); }
 };
 
-// Global state
-vector<User> users;
-vector<Book> books;
-vector<User> loginStack;
-Book* selectedBook = nullptr;
-map<string, int> userIndex; // userID -> index in users
-map<string, int> bookIndex; // ISBN -> index in books
+struct FinanceRecord {
+    double income;
+    double expenditure;
 
-// Financial records
-vector<pair<double, double>> financeRecords; // (income, expenditure)
+    FinanceRecord() : income(0.0), expenditure(0.0) {}
+    FinanceRecord(double inc, double exp) : income(inc), expenditure(exp) {}
+};
+
+// Global state (indexes and current state only - main data in files)
+vector<User> users;  // Loaded at startup, updated on changes
+vector<Book> books;  // Loaded at startup, updated on changes
+vector<string> loginStack;  // userIDs of logged in users
+string selectedBookISBN;  // ISBN of selected book
+map<string, int> userIndex; // userID -> index in users vector
+map<string, int> bookIndex; // ISBN -> index in books vector
+vector<FinanceRecord> financeRecords;  // Loaded at startup, updated on changes
 
 // Helper functions
 vector<string> split(const string& s, char delimiter) {
@@ -87,7 +141,7 @@ bool isValidPassword(const string& pass) {
 bool isValidUsername(const string& name) {
     if (name.empty() || name.length() > 30) return false;
     for (char c : name) {
-        if (c < 32 || c > 126) return false; // ASCII printable characters only
+        if (c < 32 || c > 126) return false;
     }
     return true;
 }
@@ -95,7 +149,7 @@ bool isValidUsername(const string& name) {
 bool isValidISBN(const string& isbn) {
     if (isbn.empty() || isbn.length() > 20) return false;
     for (char c : isbn) {
-        if (c < 32 || c > 126) return false; // ASCII printable characters only
+        if (c < 32 || c > 126) return false;
     }
     return true;
 }
@@ -156,7 +210,6 @@ bool isValidPrice(const string& priceStr) {
     }
     if (dotCount > 1) return false;
 
-    // Check if it has at most 2 decimal places
     size_t dotPos = priceStr.find('.');
     if (dotPos != string::npos && priceStr.length() - dotPos - 1 > 2) {
         return false;
@@ -170,12 +223,48 @@ bool isValidPrice(const string& priceStr) {
     }
 }
 
-// System initialization
-void initializeSystem() {
-    // Check if root user already exists
+int getCurrentPrivilege() {
+    if (loginStack.empty()) return 0;
+    string currentUserID = loginStack.back();
+    auto it = userIndex.find(currentUserID);
+    if (it == userIndex.end()) return 0;
+    return users[it->second].privilege;
+}
+
+// File operations
+void initializeFiles() {
+    // Create empty files if they don't exist
+    ofstream userFile(USER_FILE, ios::binary | ios::app);
+    ofstream bookFile(BOOK_FILE, ios::binary | ios::app);
+    ofstream financeFile(FINANCE_FILE, ios::binary | ios::app);
+    ofstream selectedFile(SELECTED_BOOK_FILE, ios::app);
+    ofstream loginFile(LOGIN_STACK_FILE, ios::app);
+
+    userFile.close();
+    bookFile.close();
+    financeFile.close();
+    selectedFile.close();
+    loginFile.close();
+}
+
+void loadUsers() {
+    users.clear();
+    userIndex.clear();
+
+    ifstream file(USER_FILE, ios::binary);
+    if (!file) return;
+
+    User user;
+    while (file.read(reinterpret_cast<char*>(&user), sizeof(User))) {
+        users.push_back(user);
+        userIndex[user.getUserID()] = users.size() - 1;
+    }
+    file.close();
+
+    // Check if root exists
     bool rootExists = false;
-    for (const auto& user : users) {
-        if (user.userID == ROOT_USERNAME) {
+    for (const auto& u : users) {
+        if (u.getUserID() == ROOT_USERNAME) {
             rootExists = true;
             break;
         }
@@ -185,7 +274,126 @@ void initializeSystem() {
         User root(ROOT_USERNAME, ROOT_PASSWORD, "superadmin", ROOT_PRIVILEGE);
         users.push_back(root);
         userIndex[ROOT_USERNAME] = users.size() - 1;
+
+        // Save to file
+        ofstream outFile(USER_FILE, ios::binary | ios::app);
+        if (outFile) {
+            outFile.write(reinterpret_cast<const char*>(&root), sizeof(User));
+            outFile.close();
+        }
     }
+}
+
+void saveUsers() {
+    ofstream file(USER_FILE, ios::binary);
+    if (!file) return;
+
+    for (const auto& user : users) {
+        file.write(reinterpret_cast<const char*>(&user), sizeof(User));
+    }
+    file.close();
+}
+
+void loadBooks() {
+    books.clear();
+    bookIndex.clear();
+
+    ifstream file(BOOK_FILE, ios::binary);
+    if (!file) return;
+
+    Book book;
+    while (file.read(reinterpret_cast<char*>(&book), sizeof(Book))) {
+        books.push_back(book);
+        bookIndex[book.getISBN()] = books.size() - 1;
+    }
+    file.close();
+}
+
+void saveBooks() {
+    ofstream file(BOOK_FILE, ios::binary);
+    if (!file) return;
+
+    for (const auto& book : books) {
+        file.write(reinterpret_cast<const char*>(&book), sizeof(Book));
+    }
+    file.close();
+}
+
+void loadFinance() {
+    financeRecords.clear();
+
+    ifstream file(FINANCE_FILE, ios::binary);
+    if (!file) return;
+
+    FinanceRecord record;
+    while (file.read(reinterpret_cast<char*>(&record), sizeof(FinanceRecord))) {
+        financeRecords.push_back(record);
+    }
+    file.close();
+}
+
+void saveFinance() {
+    ofstream file(FINANCE_FILE, ios::binary);
+    if (!file) return;
+
+    for (const auto& record : financeRecords) {
+        file.write(reinterpret_cast<const char*>(&record), sizeof(FinanceRecord));
+    }
+    file.close();
+}
+
+void loadLoginStack() {
+    loginStack.clear();
+
+    ifstream file(LOGIN_STACK_FILE);
+    if (!file) return;
+
+    string line;
+    while (getline(file, line)) {
+        string userID = trim(line);
+        if (!userID.empty()) {
+            loginStack.push_back(userID);
+        }
+    }
+    file.close();
+}
+
+void saveLoginStack() {
+    ofstream file(LOGIN_STACK_FILE);
+    if (!file) return;
+
+    for (const auto& userID : loginStack) {
+        file << userID << "\n";
+    }
+    file.close();
+}
+
+void loadSelectedBook() {
+    selectedBookISBN.clear();
+
+    ifstream file(SELECTED_BOOK_FILE);
+    if (!file) return;
+
+    string line;
+    getline(file, line);
+    selectedBookISBN = trim(line);
+    file.close();
+}
+
+void saveSelectedBook() {
+    ofstream file(SELECTED_BOOK_FILE);
+    if (!file) return;
+
+    file << selectedBookISBN << "\n";
+    file.close();
+}
+
+void saveAll() {
+    saveUsers();
+    saveBooks();
+    saveFinance();
+    saveLoginStack();
+    saveSelectedBook();
 }
 
 // Command implementations
@@ -199,30 +407,28 @@ bool suCommand(const vector<string>& args) {
         password = args[2];
     }
 
-    // Find user
     auto it = userIndex.find(userID);
     if (it == userIndex.end()) {
-        return false; // User doesn't exist
+        return false;
     }
 
     User& user = users[it->second];
 
-    // Check if password is required
     if (password.empty()) {
         // Password can be omitted only if current privilege > target privilege
-        if (loginStack.empty() || loginStack.back().privilege <= user.privilege) {
+        if (loginStack.empty() || getCurrentPrivilege() <= user.privilege) {
             return false;
         }
     } else {
-        // Check password
-        if (user.password != password) {
+        if (user.getPassword() != password) {
             return false;
         }
     }
 
-    // Login successful
-    loginStack.push_back(user);
-    selectedBook = nullptr; // Clear selected book when switching users
+    loginStack.push_back(userID);
+    selectedBookISBN = "";
+    saveLoginStack();
+    saveSelectedBook();
     return true;
 }
 
@@ -234,7 +440,9 @@ bool logoutCommand(const vector<string>& args) {
     }
 
     loginStack.pop_back();
-    selectedBook = nullptr; // Clear selected book on logout
+    selectedBookISBN = "";
+    saveLoginStack();
+    saveSelectedBook();
     return true;
 }
 
@@ -245,20 +453,25 @@ bool registerCommand(const vector<string>& args) {
     string password = args[2];
     string username = args[3];
 
-    // Validate inputs
     if (!isValidUserID(userID) || !isValidPassword(password) || !isValidUsername(username)) {
         return false;
     }
 
-    // Check if user already exists
     if (userIndex.find(userID) != userIndex.end()) {
         return false;
     }
 
-    // Create new user with privilege 1
     User newUser(userID, password, username, 1);
     users.push_back(newUser);
     userIndex[userID] = users.size() - 1;
+
+    // Save to file
+    ofstream file(USER_FILE, ios::binary | ios::app);
+    if (file) {
+        file.write(reinterpret_cast<const char*>(&newUser), sizeof(User));
+        file.close();
+    }
+
     return true;
 }
 
@@ -270,47 +483,43 @@ bool passwdCommand(const vector<string>& args) {
     string newPassword = "";
 
     if (args.size() == 3) {
-        // Format: passwd [UserID] [NewPassword]
         newPassword = args[2];
 
-        // Current user must be root to omit current password
-        if (loginStack.empty() || loginStack.back().privilege != ROOT_PRIVILEGE) {
+        if (loginStack.empty() || getCurrentPrivilege() != ROOT_PRIVILEGE) {
             return false;
         }
     } else {
-        // Format: passwd [UserID] [CurrentPassword] [NewPassword]
         currentPassword = args[2];
         newPassword = args[3];
     }
 
-    // Find user
     auto it = userIndex.find(userID);
     if (it == userIndex.end()) {
-        return false; // User doesn't exist
+        return false;
     }
 
     User& user = users[it->second];
 
-    // Check current password if provided
-    if (!currentPassword.empty() && user.password != currentPassword) {
+    if (!currentPassword.empty() && user.getPassword() != currentPassword) {
         return false;
     }
 
-    // Validate new password
     if (!isValidPassword(newPassword)) {
         return false;
     }
 
     // Update password
-    user.password = newPassword;
+    strncpy(user.password, newPassword.c_str(), 30);
+    user.password[30] = '\0';
+
+    saveUsers();
     return true;
 }
 
 bool useraddCommand(const vector<string>& args) {
     if (args.size() != 5) return false;
 
-    // Check current privilege
-    if (loginStack.empty() || loginStack.back().privilege < 3) {
+    if (loginStack.empty() || getCurrentPrivilege() < 3) {
         return false;
     }
 
@@ -319,7 +528,6 @@ bool useraddCommand(const vector<string>& args) {
     string privilegeStr = args[3];
     string username = args[4];
 
-    // Validate inputs
     if (!isValidUserID(userID) || !isValidPassword(password) ||
         !isValidPrivilege(privilegeStr) || !isValidUsername(username)) {
         return false;
@@ -327,70 +535,70 @@ bool useraddCommand(const vector<string>& args) {
 
     int privilege = getPrivilegeFromStr(privilegeStr);
 
-    // Check privilege rules
-    if (privilege >= loginStack.back().privilege) {
+    if (privilege >= getCurrentPrivilege()) {
         return false;
     }
 
-    // Check if user already exists
     if (userIndex.find(userID) != userIndex.end()) {
         return false;
     }
 
-    // Create new user
     User newUser(userID, password, username, privilege);
     users.push_back(newUser);
     userIndex[userID] = users.size() - 1;
+
+    // Save to file
+    ofstream file(USER_FILE, ios::binary | ios::app);
+    if (file) {
+        file.write(reinterpret_cast<const char*>(&newUser), sizeof(User));
+        file.close();
+    }
+
     return true;
 }
 
 bool deleteCommand(const vector<string>& args) {
     if (args.size() != 2) return false;
 
-    // Check current privilege
-    if (loginStack.empty() || loginStack.back().privilege != ROOT_PRIVILEGE) {
+    if (loginStack.empty() || getCurrentPrivilege() != ROOT_PRIVILEGE) {
         return false;
     }
 
     string userID = args[1];
 
-    // Find user
     auto it = userIndex.find(userID);
     if (it == userIndex.end()) {
-        return false; // User doesn't exist
+        return false;
     }
 
-    // Check if user is logged in
     for (const auto& loggedInUser : loginStack) {
-        if (loggedInUser.userID == userID) {
+        if (loggedInUser == userID) {
             return false;
         }
     }
 
-    // Remove user
     int index = it->second;
     users.erase(users.begin() + index);
     userIndex.erase(it);
 
-    // Update indices
     for (auto& pair : userIndex) {
         if (pair.second > index) {
             pair.second--;
         }
     }
 
+    saveUsers();
     return true;
 }
 
 bool showCommand(const vector<string>& args) {
-    if (loginStack.empty() || loginStack.back().privilege < 1) {
+    if (loginStack.empty() || getCurrentPrivilege() < 1) {
         return false;
     }
 
     vector<Book> results;
 
     if (args.size() == 1) {
-        // Show all books
         results = books;
     } else if (args.size() == 2) {
         string param = args[1];
@@ -408,7 +616,7 @@ bool showCommand(const vector<string>& args) {
             if (!isValidBookName(name) || name.empty()) return false;
 
             for (const auto& book : books) {
-                if (book.bookName == name) {
+                if (book.getBookName() == name) {
                     results.push_back(book);
                 }
             }
@@ -417,7 +625,7 @@ bool showCommand(const vector<string>& args) {
             if (!isValidAuthor(author) || author.empty()) return false;
 
             for (const auto& book : books) {
-                if (book.author == author) {
+                if (book.getAuthor() == author) {
                     results.push_back(book);
                 }
             }
@@ -425,20 +633,17 @@ bool showCommand(const vector<string>& args) {
             string keyword = param.substr(10, param.length() - 11);
             if (!isValidKeyword(keyword) || keyword.empty()) return false;
 
-            // Check if keyword contains multiple keywords (not allowed for show)
             if (keyword.find('|') != string::npos) {
                 return false;
             }
 
             for (const auto& book : books) {
-                if (book.keyword.find(keyword) != string::npos) {
-                    // Check if keyword matches exactly (considering | separators)
-                    vector<string> keywords = split(book.keyword, '|');
-                    for (const auto& kw : keywords) {
-                        if (kw == keyword) {
-                            results.push_back(book);
-                            break;
-                        }
+                string bookKeywords = book.getKeyword();
+                vector<string> keywords = split(bookKeywords, '|');
+                for (const auto& kw : keywords) {
+                    if (kw == keyword) {
+                        results.push_back(book);
+                        break;
                     }
                 }
             }
@@ -449,15 +654,13 @@ bool showCommand(const vector<string>& args) {
         return false;
     }
 
-    // Sort results by ISBN
     sort(results.begin(), results.end(), [](const Book& a, const Book& b) {
-        return a.ISBN < b.ISBN;
+        return a.getISBN() < b.getISBN();
     });
 
-    // Output results
     for (const auto& book : results) {
-        cout << book.ISBN << "\t" << book.bookName << "\t" << book.author
-             << "\t" << book.keyword << "\t" << fixed << setprecision(2)
+        cout << book.getISBN() << "\t" << book.getBookName() << "\t" << book.getAuthor()
+             << "\t" << book.getKeyword() << "\t" << fixed << setprecision(2)
              << book.price << "\t" << book.quantity << "\n";
     }
 
@@ -471,7 +674,7 @@ bool showCommand(const vector<string>& args) {
 bool buyCommand(const vector<string>& args) {
     if (args.size() != 3) return false;
 
-    if (loginStack.empty() || loginStack.back().privilege < 1) {
+    if (loginStack.empty() || getCurrentPrivilege() < 1) {
         return false;
     }
 
@@ -484,29 +687,25 @@ bool buyCommand(const vector<string>& args) {
 
     int quantity = stoi(qtyStr);
 
-    // Find book
     auto it = bookIndex.find(isbn);
     if (it == bookIndex.end()) {
-        return false; // Book doesn't exist
+        return false;
     }
 
     Book& book = books[it->second];
 
-    // Check inventory
     if (book.quantity < quantity) {
         return false;
     }
 
-    // Calculate total cost
     double totalCost = book.price * quantity;
-
-    // Update inventory
     book.quantity -= quantity;
 
-    // Record transaction
-    financeRecords.push_back({totalCost, 0.0});
+    financeRecords.push_back(FinanceRecord(totalCost, 0.0));
 
-    // Output total cost
+    saveBooks();
+    saveFinance();
+
     cout << fixed << setprecision(2) << totalCost << "\n";
     return true;
 }
@@ -514,7 +713,7 @@ bool buyCommand(const vector<string>& args) {
 bool selectCommand(const vector<string>& args) {
     if (args.size() != 2) return false;
 
-    if (loginStack.empty() || loginStack.back().privilege < 3) {
+    if (loginStack.empty() || getCurrentPrivilege() < 3) {
         return false;
     }
 
@@ -524,52 +723,62 @@ bool selectCommand(const vector<string>& args) {
         return false;
     }
 
-    // Find or create book
     auto it = bookIndex.find(isbn);
     if (it == bookIndex.end()) {
-        // Create new book
         Book newBook(isbn);
         books.push_back(newBook);
         bookIndex[isbn] = books.size() - 1;
-        selectedBook = &books.back();
+        selectedBookISBN = isbn;
+
+        // Save new book to file
+        ofstream file(BOOK_FILE, ios::binary | ios::app);
+        if (file) {
+            file.write(reinterpret_cast<const char*>(&newBook), sizeof(Book));
+            file.close();
+        }
     } else {
-        selectedBook = &books[it->second];
+        selectedBookISBN = isbn;
     }
 
+    saveSelectedBook();
     return true;
 }
 
 bool modifyCommand(const vector<string>& args) {
     if (args.size() < 2) return false;
 
-    if (loginStack.empty() || loginStack.back().privilege < 3) {
+    if (loginStack.empty() || getCurrentPrivilege() < 3) {
         return false;
     }
 
-    if (!selectedBook) {
-        return false; // No book selected
+    if (selectedBookISBN.empty()) {
+        return false;
     }
 
-    Book originalBook = *selectedBook;
+    auto it = bookIndex.find(selectedBookISBN);
+    if (it == bookIndex.end()) {
+        return false;
+    }
+
+    Book& book = books[it->second];
     map<string, bool> paramUsed;
 
     for (size_t i = 1; i < args.size(); i++) {
         string param = args[i];
 
         if (param.find("-ISBN=") == 0) {
-            if (paramUsed["ISBN"]) return false; // Duplicate parameter
+            if (paramUsed["ISBN"]) return false;
             paramUsed["ISBN"] = true;
 
             string newISBN = param.substr(6);
             if (!isValidISBN(newISBN) || newISBN.empty()) return false;
 
-            // Cannot change to same ISBN
-            if (newISBN == selectedBook->ISBN) return false;
+            if (newISBN == selectedBookISBN) return false;
 
-            // Check if new ISBN already exists
             if (bookIndex.find(newISBN) != bookIndex.end()) return false;
 
-            selectedBook->ISBN = newISBN;
+            strncpy(book.ISBN, newISBN.c_str(), 20);
+            book.ISBN[20] = '\0';
         } else if (param.find("-name=\"") == 0 && param.back() == '\"') {
             if (paramUsed["name"]) return false;
             paramUsed["name"] = true;
@@ -577,7 +786,8 @@ bool modifyCommand(const vector<string>& args) {
             string name = param.substr(7, param.length() - 8);
             if (!isValidBookName(name) || name.empty()) return false;
 
-            selectedBook->bookName = name;
+            strncpy(book.bookName, name.c_str(), 60);
+            book.bookName[60] = '\0';
         } else if (param.find("-author=\"") == 0 && param.back() == '\"') {
             if (paramUsed["author"]) return false;
             paramUsed["author"] = true;
@@ -585,7 +795,8 @@ bool modifyCommand(const vector<string>& args) {
             string author = param.substr(9, param.length() - 10);
             if (!isValidAuthor(author) || author.empty()) return false;
 
-            selectedBook->author = author;
+            strncpy(book.author, author.c_str(), 60);
+            book.author[60] = '\0';
         } else if (param.find("-keyword=\"") == 0 && param.back() == '\"') {
             if (paramUsed["keyword"]) return false;
             paramUsed["keyword"] = true;
@@ -593,14 +804,14 @@ bool modifyCommand(const vector<string>& args) {
             string keyword = param.substr(10, param.length() - 11);
             if (!isValidKeyword(keyword) || keyword.empty()) return false;
 
-            // Check for duplicate keywords
             vector<string> keywords = split(keyword, '|');
             sort(keywords.begin(), keywords.end());
             for (size_t j = 1; j < keywords.size(); j++) {
                 if (keywords[j] == keywords[j-1]) return false;
             }
 
-            selectedBook->keyword = keyword;
+            strncpy(book.keyword, keyword.c_str(), 60);
+            book.keyword[60] = '\0';
         } else if (param.find("-price=") == 0) {
             if (paramUsed["price"]) return false;
             paramUsed["price"] = true;
@@ -608,30 +819,32 @@ bool modifyCommand(const vector<string>& args) {
             string priceStr = param.substr(7);
             if (!isValidPrice(priceStr) || priceStr.empty()) return false;
 
-            selectedBook->price = stod(priceStr);
+            book.price = stod(priceStr);
         } else {
             return false;
         }
     }
 
-    // Update book index if ISBN changed
     if (paramUsed["ISBN"]) {
-        bookIndex.erase(originalBook.ISBN);
-        bookIndex[selectedBook->ISBN] = &(*selectedBook) - &books[0];
+        bookIndex.erase(selectedBookISBN);
+        bookIndex[book.getISBN()] = &book - &books[0];
+        selectedBookISBN = book.getISBN();
+        saveSelectedBook();
     }
 
+    saveBooks();
     return true;
 }
 
 bool importCommand(const vector<string>& args) {
     if (args.size() != 3) return false;
 
-    if (loginStack.empty() || loginStack.back().privilege < 3) {
+    if (loginStack.empty() || getCurrentPrivilege() < 3) {
         return false;
     }
 
-    if (!selectedBook) {
-        return false; // No book selected
+    if (selectedBookISBN.empty()) {
+        return false;
     }
 
     string qtyStr = args[1];
@@ -648,21 +861,27 @@ bool importCommand(const vector<string>& args) {
         return false;
     }
 
-    // Update inventory
-    selectedBook->quantity += quantity;
+    auto it = bookIndex.find(selectedBookISBN);
+    if (it == bookIndex.end()) {
+        return false;
+    }
 
-    // Record transaction
-    financeRecords.push_back({0.0, totalCost});
+    Book& book = books[it->second];
+    book.quantity += quantity;
 
+    financeRecords.push_back(FinanceRecord(0.0, totalCost));
+
+    saveBooks();
+    saveFinance();
     return true;
 }
 
 bool showFinanceCommand(const vector<string>& args) {
-    if (loginStack.empty() || loginStack.back().privilege != ROOT_PRIVILEGE) {
+    if (loginStack.empty() || getCurrentPrivilege() != ROOT_PRIVILEGE) {
         return false;
     }
 
-    int count = -1; // -1 means all
+    int count = -1;
 
     if (args.size() == 2) {
         string countStr = args[1];
@@ -683,20 +902,18 @@ bool showFinanceCommand(const vector<string>& args) {
     double totalExpenditure = 0.0;
 
     if (count == -1) {
-        // All records
         for (const auto& record : financeRecords) {
-            totalIncome += record.first;
-            totalExpenditure += record.second;
+            totalIncome += record.income;
+            totalExpenditure += record.expenditure;
         }
     } else {
-        // Last 'count' records
         if (count > (int)financeRecords.size()) {
             return false;
         }
 
         for (int i = financeRecords.size() - count; i < (int)financeRecords.size(); i++) {
-            totalIncome += financeRecords[i].first;
-            totalExpenditure += financeRecords[i].second;
+            totalIncome += financeRecords[i].income;
+            totalExpenditure += financeRecords[i].expenditure;
         }
     }
 
@@ -706,54 +923,42 @@ bool showFinanceCommand(const vector<string>& args) {
 }
 
 bool logCommand() {
-    if (loginStack.empty() || loginStack.back().privilege != ROOT_PRIVILEGE) {
+    if (loginStack.empty() || getCurrentPrivilege() != ROOT_PRIVILEGE) {
         return false;
     }
 
-    // Simple log implementation
     cout << "=== System Log ===\n";
     cout << "Total users: " << users.size() << "\n";
     cout << "Total books: " << books.size() << "\n";
     cout << "Total transactions: " << financeRecords.size() << "\n";
     cout << "Currently logged in users: " << loginStack.size() << "\n";
-
     return true;
 }
 
 bool reportFinanceCommand() {
-    if (loginStack.empty() || loginStack.back().privilege != ROOT_PRIVILEGE) {
+    if (loginStack.empty() || getCurrentPrivilege() != ROOT_PRIVILEGE) {
         return false;
     }
 
     cout << "=== Financial Report ===\n";
-    cout << "Total income: " << fixed << setprecision(2);
-    double totalIncome = 0.0;
+    double totalIncome = 0.0, totalExpenditure = 0.0;
     for (const auto& record : financeRecords) {
-        totalIncome += record.first;
+        totalIncome += record.income;
+        totalExpenditure += record.expenditure;
     }
-    cout << totalIncome << "\n";
-
-    cout << "Total expenditure: " << fixed << setprecision(2);
-    double totalExpenditure = 0.0;
-    for (const auto& record : financeRecords) {
-        totalExpenditure += record.second;
-    }
-    cout << totalExpenditure << "\n";
-
-    cout << "Net profit: " << fixed << setprecision(2)
-         << (totalIncome - totalExpenditure) << "\n";
-
+    cout << "Total income: " << fixed << setprecision(2) << totalIncome << "\n";
+    cout << "Total expenditure: " << fixed << setprecision(2) << totalExpenditure << "\n";
+    cout << "Net profit: " << fixed << setprecision(2) << (totalIncome - totalExpenditure) << "\n";
     return true;
 }
 
 bool reportEmployeeCommand() {
-    if (loginStack.empty() || loginStack.back().privilege != ROOT_PRIVILEGE) {
+    if (loginStack.empty() || getCurrentPrivilege() != ROOT_PRIVILEGE) {
         return false;
     }
 
     cout << "=== Employee Work Report ===\n";
-    cout << "No employee activity recorded in this simple implementation.\n";
-
+    cout << "No employee activity recorded.\n";
     return true;
 }
 
@@ -761,7 +966,6 @@ bool reportEmployeeCommand() {
 void processCommand(const string& line) {
     if (line.empty()) return;
 
-    // Split command into tokens
     vector<string> tokens;
     istringstream iss(line);
     string token;
@@ -775,6 +979,7 @@ void processCommand(const string& line) {
     bool success = false;
 
     if (command == "quit" || command == "exit") {
+        saveAll();
         exit(0);
     } else if (command == "su") {
         success = suCommand(tokens);
@@ -826,8 +1031,15 @@ void processCommand(const string& line) {
 }
 
 int main() {
-    // Initialize system
-    initializeSystem();
+    // Initialize file system
+    initializeFiles();
+
+    // Load data from files
+    loadUsers();
+    loadBooks();
+    loadFinance();
+    loadLoginStack();
+    loadSelectedBook();
 
     // Read commands from stdin
     string line;
@@ -835,5 +1047,6 @@ int main() {
         processCommand(line);
     }
 
+    saveAll();
     return 0;
 }
